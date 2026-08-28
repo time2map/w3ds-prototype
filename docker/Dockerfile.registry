@@ -25,16 +25,16 @@ RUN pnpm turbo build --filter=registry
 
 # ---
 FROM base AS runner
-# Copy workspace configuration for proper module resolution
+# Copy the app to its ORIGINAL workspace path. pnpm creates relative symlinks
+# inside node_modules, so relocating the package would break module resolution.
+COPY --from=builder /app/platforms/registry/api/ ./platforms/registry/api/
+# Workspace config + root node_modules (pnpm store + workspace links)
 COPY --from=builder /app/package.json ./
 COPY --from=builder /app/pnpm-workspace.yaml ./
 COPY --from=builder /app/pnpm-lock.yaml ./
-# Copy built application
-COPY --from=builder /app/platforms/registry/api/dist ./dist
-COPY --from=builder /app/platforms/registry/api/package.json ./
-COPY --from=builder /app/platforms/registry/api/motd.json ./
-COPY --from=builder /app/platforms/registry/api/node_modules ./node_modules
 COPY --from=builder /app/node_modules ./node_modules
+
+WORKDIR /app/platforms/registry/api
 
 EXPOSE 4321
 HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \

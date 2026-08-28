@@ -9,6 +9,7 @@ import { ProvisioningController } from "./controllers/ProvisioningController";
 import { VerificationController } from "./controllers/VerificationController";
 import { LegacyVerificationController } from "./controllers/LegacyVerificationController";
 import { RecoveryController } from "./controllers/RecoveryController";
+import { AdminController } from "./controllers/AdminController";
 import { ProvisioningService } from "./services/ProvisioningService";
 import { VerificationService } from "./services/VerificationService";
 import { createHmacSignature } from "./utils/hmac";
@@ -40,7 +41,7 @@ const fastifyPort = process.env.FASTIFY_PORT || process.env.PORT || 4000;
 expressApp.use(
     cors({
         origin: "*",
-        methods: ["GET", "POST", "OPTIONS", "PATCH"],
+        methods: ["GET", "POST", "OPTIONS", "PATCH", "DELETE"],
         allowedHeaders: ["Content-Type", "Authorization", "X-ENAME", "x-shared-secret"],
         credentials: true,
     }),
@@ -304,6 +305,7 @@ const start = async () => {
             verificationService,
         );
         const recoveryController = new RecoveryController(verificationService);
+        const adminController = new AdminController();
 
         // Register verification, notification, provisioning, and recovery routes
         legacyVerificationController.registerRoutes(expressApp);
@@ -311,6 +313,7 @@ const start = async () => {
         notificationController.registerRoutes(expressApp);
         provisioningController.registerRoutes(expressApp);
         recoveryController.registerRoutes(expressApp);
+        adminController.registerRoutes(expressApp);
 
         // Start eVault Core (Fastify + GraphQL) with provisioning service first
         await initializeEVault(provisioningService);

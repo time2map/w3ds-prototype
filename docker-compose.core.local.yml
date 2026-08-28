@@ -1,0 +1,154 @@
+# Minimal core stack: Postgres + Neo4j + registry + evault-core.
+# Bring up with: docker compose -f docker-compose.core.yml up -d --build
+# Secrets are read from the repo-root .env (auto-loaded by Compose).
+
+name: metastate-core
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: metastate-core-postgres
+    ports:
+      - "5432:5432"
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
+      POSTGRES_MULTIPLE_DATABASES: registry,provisioner
+    volumes:
+      - ./datastorage/postgres:/var/lib/postgresql/data
+      - ./db/init-multiple-databases.sh:/docker-entrypoint-initdb.d/init-multiple-databases.sh
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-postgres}" ]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+
+  neo4j:
+    image: neo4j:4.4
+    container_name: metastate-core-neo4j
+    ports:
+      - "7474:7474"
+      - "7687:7687"
+    environment:
+      NEO4J_AUTH: ${NEO4J_USER:-neo4j}/${NEO4J_PASSWORD:-neo4j}
+      NEO4J_USER: ${NEO4J_USER:-neo4j}
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-neo4j}
+      NEO4J_dbms_connector_bolt_listen__address: 0.0.0.0:7687
+      NEO4J_dbms_connector_http_listen__address: 0.0.0.0:7474
+    volumes:
+      - ./datastorage/neo4j:/var/lib/neo4j/data
+    healthcheck:
+      test: [ "CMD-SHELL", "cypher-shell -u ${NEO4J_USER:-neo4j} -p ${NEO4J_PASSWORD:-neo4j} 'RETURN 1' || exit 1" ]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  # One-shot migration runners (reuse the app images, exit 0 when done).
+  migrate-registry:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.registry
+    container_name: metastate-core-migrate-registry
+    command:
+      - node
+      - -e
+      - "const {AppDataSource}=require('/app/platforms/registry/api/dist/config/database.js');AppDataSource.initialize().then(()=>AppDataSource.runMigrations()).then(()=>{console.log('registry migrations applied');process.exit(0)}).catch(e=>{console.error(e);process.exit(1)})"
+    environment:
+      REGISTRY_DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/registry
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  migrate-evault:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.evault-core
+    container_name: metastate-core-migrate-evault
+    command:
+      - node
+      - -e
+      - "const {AppDataSource}=require('/app/infrastructure/evault-core/dist/config/database.js');AppDataSource.initialize().then(()=>AppDataSource.runMigrations()).then(()=>{console.log('evault-core migrations applied');process.exit(0)}).catch(e=>{console.error(e);process.exit(1)})"
+    environment:
+      PROVISIONER_DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/provisioner
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
+  registry:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.registry
+    container_name: metastate-core-registry
+    ports:
+      - "4321:4321"
+    environment:
+      REGISTRY_DATABASE_URL: postgresql://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/registry
+      REGISTRY_ENTROPY_KEY_JWK: '${REGISTRY_ENTROPY_KEY_JWK:?REGISTRY_ENTROPY_KEY_JWK must be set in .env}'
+      REGISTRY_SHARED_SECRET: ${REGISTRY_SHARED_SECRET:-dev-secret-change-me}
+      PUBLIC_REGISTRY_URL: http://localhost:4321
+    depends_on:
+      migrate-registry:
+        condition: service_completed_successfully
+    healthcheck:
+      test: [ "CMD-SHELL", "node -e \"require('http').get('http://localhost:4321/motd',(r)=>process.exit(r.statusCode===200?0:1))\"" ]
+      interval: 30s
+      timeout: 3s
+      start_period: 10s
+      retries: 3
+
+  evault-core:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.evault-core
+    container_name: metastate-core-evault-core
+    ports:
+      - "3001:3001"
+      - "4000:4000"
+    environment:
+      # NOTE: only PROVISIONER_DATABASE_URL is set. evault-core's DataSource
+      # prefers REGISTRY_DATABASE_URL; leaving it unset keeps runtime and
+      # migrations on the same 'provisioner' database.
+      PROVISIONER_DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/provisioner
+      NEO4J_URI: bolt://neo4j:7687
+      NEO4J_USER: ${NEO4J_USER:-neo4j}
+      NEO4J_PASSWORD: ${NEO4J_PASSWORD:-neo4j}
+      PUBLIC_REGISTRY_URL: http://registry:4321
+      PUBLIC_PROVISIONER_URL: http://localhost:3001
+      PUBLIC_EVAULT_SERVER_URI: http://localhost:4000
+      REGISTRY_SHARED_SECRET: ${REGISTRY_SHARED_SECRET:-dev-secret-change-me}
+      PROVISIONER_SIGNING_SEED: '${PROVISIONER_SIGNING_SEED:?PROVISIONER_SIGNING_SEED must be set in .env}'
+      PROVISIONER_KID: ${PROVISIONER_KID:-provisioner-1}
+      W3ID: ${W3ID:-@local-evault}
+      PLATFORM_NAME: provisioner
+      EXPRESS_PORT: "3001"
+      FASTIFY_PORT: "4000"
+    depends_on:
+      migrate-evault:
+        condition: service_completed_successfully
+      neo4j:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD-SHELL", "node -e \"require('http').get('http://localhost:3001/health',(r)=>process.exit(r.statusCode===200?0:1))\"" ]
+      interval: 30s
+      timeout: 3s
+      start_period: 10s
+      retries: 3
+
+  # Serves the admin UI and proxies registry/evault over HTTP (single entry point).
+  nginx:
+    image: nginx:alpine
+    container_name: metastate-core-nginx
+    ports:
+      - "8042:80"
+    volumes:
+      - ./docker/nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./infrastructure/admin_ui:/usr/share/nginx/html:ro
+    depends_on:
+      registry:
+        condition: service_healthy
+      evault-core:
+        condition: service_healthy

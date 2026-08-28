@@ -55,3 +55,4 @@ evault-cache.json
 
 # Per-developer Claude Code permission grants
 .claude/settings.local.json
+datastorage/

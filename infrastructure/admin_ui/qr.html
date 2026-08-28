@@ -1,0 +1,420 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>QR Auth</title>
+  <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
+  <script src="/admin/elliptic.min.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/js-sha256/0.11.0/sha256.min.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0f172a;
+      color: #e2e8f0;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      padding: 16px;
+    }
+    h1 { font-size: 1.5rem; margin: 16px 0; }
+    #reader { width: 100%; max-width: 400px; border-radius: 12px; overflow: hidden; background: #1e293b; }
+    #reader video { border-radius: 12px; }
+    #result { margin-top: 16px; width: 100%; max-width: 400px; padding: 16px; background: #1e293b; border-radius: 12px; word-break: break-all; font-size: 0.875rem; display: none; }
+    #status { margin-top: 12px; padding: 12px 16px; border-radius: 8px; font-size: 0.875rem; width: 100%; max-width: 400px; text-align: center; display: none; }
+    .success { background: #064e3b; color: #6ee7b7; }
+    .error { background: #7f1d1d; color: #fca5a5; }
+    .info { background: #1e3a5f; color: #93c5fd; }
+    .btn { margin-top: 16px; padding: 12px 24px; background: #2563eb; color: #fff; border: none; border-radius: 8px; font-size: 1rem; cursor: pointer; width: 100%; max-width: 400px; }
+    .btn:active { background: #1d4ed8; }
+    #log { margin-top: 16px; width: 100%; max-width: 400px; padding: 12px; background: #1e293b; border-radius: 8px; font-size: 0.75rem; color: #94a3b8; max-height: 200px; overflow-y: auto; display: none; font-family: monospace; white-space: pre-wrap; }
+    .field { width: 100%; max-width: 400px; padding: 12px; border-radius: 8px; border: 1px solid #334155; background: #1e293b; color: #e2e8f0; font-size: 0.875rem; margin-bottom: 8px; outline: none; }
+    .btn-secondary { background: #475569; }
+    .btn-secondary:active { background: #334155; }
+    .btn-outline { background: transparent; border: 1px solid #475569; }
+    #settings { width: 100%; max-width: 400px; background: #1e293b; border-radius: 8px; padding: 12px; margin-bottom: 12px; display: none; }
+    #settings label { display: block; font-size: 0.75rem; color: #94a3b8; margin-bottom: 4px; }
+    #settings .field { margin-bottom: 12px; background: #0f172a; }
+    .row { display: flex; gap: 8px; width: 100%; max-width: 400px; margin-bottom: 12px; }
+    .row .btn { flex: 1; margin-top: 0; }
+  </style>
+</head>
+<body>
+  <h1>Scan QR Code</h1>
+
+  <button class="btn btn-outline" id="settingsToggle" onclick="toggleSettings()">Settings</button>
+  <div id="settings">
+    <label>Registry URL</label>
+    <input type="text" id="registryUrl" class="field" placeholder="/api/registry">
+    <label>Public eVault URL override (optional, for sync from other devices)</label>
+    <input type="text" id="evaultUrlOverride" class="field" placeholder="http://&lt;host-ip&gt;:4000">
+    <button class="btn btn-secondary" id="saveSettingsBtn" onclick="saveSettings()">Save</button>
+  </div>
+
+  <input type="text" id="enameInput" class="field" placeholder="@22c911f4-bf54-511a-a03b-a73dd5d5efb6">
+  <div id="pubkeyBox" style="width:100%;max-width:400px;padding:10px;background:#1e293b;border-radius:8px;font-size:0.7rem;color:#6ee7b7;margin-bottom:8px;word-break:break-all;font-family:monospace"></div>
+
+  <div class="row">
+    <button class="btn btn-secondary" id="genKeyBtn" onclick="generateKeyPair()">New Key</button>
+  </div>
+  <button class="btn" id="syncKeyBtn" style="background:#059669;margin-top:0;margin-bottom:12px" onclick="syncPublicKey()">Sync Key to eVault</button>
+
+  <div class="row" style="margin-top:0;margin-bottom:12px">
+    <button class="btn btn-outline" onclick="document.getElementById('qrFileInput').click()">Upload QR image</button>
+    <button class="btn btn-outline" onclick="pasteFromClipboard()">Paste QR (Ctrl+V)</button>
+  </div>
+  <input type="file" id="qrFileInput" accept="image/*" style="display:none">
+  <div id="fileReader" style="display:none"></div>
+
+  <div id="reader"></div>
+  <div id="result"></div>
+  <div id="status"></div>
+  <button class="btn" id="restartBtn" style="display:none" onclick="restartScanner()">Scan Again</button>
+  <div id="log"></div>
+
+  <script>
+    const READER_ID = 'reader';
+
+    const CONFIG_KEY = 'fw_qr_config';
+    const KEYS_KEY = 'fw_qr_keys';
+
+    const DEFAULTS = {
+      registryUrl: '/api/registry',
+      evaultUrlOverride: '',
+      ename: ''
+    };
+
+    // Fallback ECDSA P-256 key pair (used only when no keys are persisted yet)
+    const DEFAULT_KEYS = {
+      privateJwk: {"key_ops":["sign"],"ext":true,"kty":"EC","x":"tnCnuFNUi6cECY0feZAY6rMQo9VUhbhf-7bJHTHmKKU","y":"vw7V8zCwx5-ryu58VTkP92IbZoRjWsPsKVtQ9hBht6c","crv":"P-256","d":"hCvmAxtMhuM_a9KlmN7qps5bR8GyXJEvIx6iPuttthY"},
+      publicKeyB64: 'BLZwp7hTVIunBAmNH3mQGOqzEKPVVIW4X_u2yR0x5iilvw7V8zCwx5-ryu58VTkP92IbZoRjWsPsKVtQ9hBht6c'
+    };
+
+    const ec = new elliptic.ec('p256');
+
+    let config = loadJSON(CONFIG_KEY, DEFAULTS);
+    let keys = loadJSON(KEYS_KEY, DEFAULT_KEYS);
+    let privateJwk = keys.privateJwk;
+    let publicKeyB64 = keys.publicKeyB64;
+    let keyPair = ec.keyFromPrivate(base64UrlToBytes(privateJwk.d));
+
+    let html5QrCode = null;
+
+    function loadJSON(key, fallback) {
+      try {
+        const raw = localStorage.getItem(key);
+        if (raw) return Object.assign({}, fallback, JSON.parse(raw));
+      } catch (e) {}
+      return Object.assign({}, fallback);
+    }
+
+    function base64UrlToBytes(str) {
+      str = str.replace(/-/g, '+').replace(/_/g, '/');
+      const padded = str + '='.repeat((4 - str.length % 4) % 4);
+      return Uint8Array.from(atob(padded), c => c.charCodeAt(0));
+    }
+
+    function bytesToBase64Url(bytes) {
+      let binary = '';
+      for (let i = 0; i < bytes.length; i++) binary += String.fromCharCode(bytes[i]);
+      return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+    }
+
+    function uuidv4() {
+      if (crypto && crypto.randomUUID) return crypto.randomUUID();
+      if (crypto && crypto.getRandomValues) {
+        const b = crypto.getRandomValues(new Uint8Array(16));
+        b[6] = (b[6] & 0x0f) | 0x40;
+        b[8] = (b[8] & 0x3f) | 0x80;
+        const h = Array.from(b, x => x.toString(16).padStart(2, '0')).join('');
+        return h.slice(0, 8) + '-' + h.slice(8, 12) + '-' + h.slice(12, 16) + '-' + h.slice(16, 20) + '-' + h.slice(20);
+      }
+      return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {
+        const r = Math.random() * 16 | 0;
+        const v = c === 'x' ? r : (r & 0x3 | 0x8);
+        return v.toString(16);
+      });
+    }
+
+    function toggleSettings() {
+      const el = document.getElementById('settings');
+      el.style.display = el.style.display === 'none' ? 'block' : 'none';
+      if (el.style.display === 'block') {
+        document.getElementById('registryUrl').value = config.registryUrl;
+        document.getElementById('evaultUrlOverride').value = config.evaultUrlOverride;
+      }
+    }
+
+    function saveSettings() {
+      config.registryUrl = document.getElementById('registryUrl').value.trim() || DEFAULTS.registryUrl;
+      config.evaultUrlOverride = document.getElementById('evaultUrlOverride').value.trim();
+      localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
+      showLog('Settings saved: registry=' + config.registryUrl);
+      showStatus('Settings saved', 'success');
+    }
+
+    function generateKeyPair() {
+      const kp = ec.genKeyPair();
+      const x = kp.getPublic().getX().toArray('be', 32);
+      const y = kp.getPublic().getY().toArray('be', 32);
+      const d = kp.getPrivate().toArray('be', 32);
+      const point = new Uint8Array(65);
+      point[0] = 4;
+      point.set(x, 1);
+      point.set(y, 33);
+
+      privateJwk = {
+        key_ops: ['sign'], ext: true, kty: 'EC',
+        x: bytesToBase64Url(x), y: bytesToBase64Url(y), crv: 'P-256', d: bytesToBase64Url(d)
+      };
+      publicKeyB64 = bytesToBase64Url(point);
+      keys = { privateJwk, publicKeyB64 };
+      localStorage.setItem(KEYS_KEY, JSON.stringify(keys));
+      keyPair = ec.keyFromPrivate(base64UrlToBytes(privateJwk.d));
+
+      document.getElementById('pubkeyBox').textContent = 'PubKey: ' + publicKeyB64;
+      showLog('Generated new key pair');
+      showStatus('New key pair generated', 'success');
+    }
+
+    function getEname() {
+      return document.getElementById('enameInput').value.trim() || config.ename || '@22c911f4-bf54-511a-a03b-a73dd5d5efb6';
+    }
+
+    function showLog(msg) {
+      const el = document.getElementById('log');
+      el.style.display = 'block';
+      el.textContent += '[' + new Date().toLocaleTimeString() + '] ' + msg + '\n';
+      el.scrollTop = el.scrollHeight;
+    }
+
+    function showStatus(msg, type) {
+      const el = document.getElementById('status');
+      el.style.display = 'block';
+      el.className = type;
+      el.textContent = msg;
+    }
+
+    function showResult(text) {
+      const el = document.getElementById('result');
+      el.style.display = 'block';
+      el.textContent = 'QR: ' + text;
+    }
+
+    function parseQrData(text) {
+      showLog('Raw QR: ' + text);
+      const trimmed = text.trim();
+      let url;
+      try {
+        url = new URL(trimmed.replace(/^w3ds:\/\//, 'https://'));
+      } catch (e) {
+        const params = new URLSearchParams(trimmed);
+        return { redirect: params.get('redirect'), session: params.get('session'), platform: params.get('platform') };
+      }
+      return { redirect: url.searchParams.get('redirect'), session: url.searchParams.get('session'), platform: url.searchParams.get('platform') };
+    }
+
+    function signSession(session) {
+      const data = new TextEncoder().encode(session);
+      // SHA-256 hash using js-sha256 library
+      const hashHex = sha256(data);
+      const msgHash = hashHex.match(/.{1,2}/g).map(b => parseInt(b, 16));
+      const sig = keyPair.sign(msgHash, { canonical: true });
+      // Raw r||s format (64 bytes)
+      const r = sig.r.toArray('be', 32);
+      const s = sig.s.toArray('be', 32);
+      const raw = new Uint8Array(64);
+      raw.set(r, 0);
+      raw.set(s, 32);
+      return bytesToBase64Url(raw);
+    }
+
+    // --- Sync public key to eVault ---
+
+    async function syncPublicKey() {
+      const ename = getEname();
+      showLog('Syncing key for ' + ename + '...');
+      showStatus('Getting token...', 'info');
+
+      try {
+        // 1. Get auth token from Registry /entropy
+        const entropyRes = await fetch(config.registryUrl + '/entropy');
+        if (!entropyRes.ok) throw new Error('/entropy: ' + entropyRes.status);
+        const entropyData = await entropyRes.json();
+        const token = entropyData.token;
+        if (!token) throw new Error('No token from /entropy');
+        showLog('Got token');
+
+        // 2. Resolve ename → eVault URI (or use the configured override)
+        showStatus('Resolving eVault...', 'info');
+        let evaultUri = config.evaultUrlOverride.trim();
+        if (!evaultUri) {
+          const resolveRes = await fetch(config.registryUrl + '/resolve?w3id=' + encodeURIComponent(ename), { headers: { accept: 'application/json' } });
+          if (!resolveRes.ok) throw new Error('resolve: ' + resolveRes.status);
+          const resolveData = await resolveRes.json();
+          evaultUri = (resolveData.uri || '').replace(/\/$/, '');
+        } else {
+          evaultUri = evaultUri.replace(/\/$/, '');
+        }
+        if (!evaultUri) throw new Error('No eVault URI');
+        showLog('eVault: ' + evaultUri);
+
+        // 3. PATCH /public-key directly
+        showStatus('Syncing public key...', 'info');
+        const patchRes = await fetch(evaultUri + '/public-key', {
+          method: 'PATCH',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-ENAME': ename,
+            'Authorization': 'Bearer ' + token
+          },
+          body: JSON.stringify({ publicKey: publicKeyB64 })
+        });
+        const patchText = await patchRes.text();
+        showLog('Sync result: ' + patchText);
+        showStatus('Sync ' + (patchRes.ok ? 'OK' : 'failed'), patchRes.ok ? 'success' : 'error');
+      } catch (err) {
+        showLog('Sync error: ' + err.message);
+        showStatus('Sync failed: ' + err.message, 'error');
+      }
+    }
+
+    // --- Decode QR from image (uploaded or pasted) ---
+
+    let fileQrCode = null;
+
+    function getFileDecoder() {
+      if (!fileQrCode) fileQrCode = new Html5Qrcode('fileReader');
+      return fileQrCode;
+    }
+
+    async function decodeQrFromFile(file) {
+      return getFileDecoder().scanFile(file, false);
+    }
+
+    async function handleQrImageFile(file) {
+      showStatus('Decoding QR image...', 'info');
+      showLog('Decoding QR image: ' + file.name);
+      try {
+        const text = await decodeQrFromFile(file);
+        if (text) {
+          showResult(text);
+          sendPost(parseQrData(text));
+        } else {
+          showStatus('No QR code found in image', 'error');
+        }
+      } catch (err) {
+        showStatus('Failed to decode QR: ' + err.message, 'error');
+        showLog('Decode error: ' + err.message);
+      }
+    }
+
+    async function pasteFromClipboard() {
+      try {
+        if (!navigator.clipboard || !navigator.clipboard.read) {
+          showStatus('Clipboard API not available. Use Ctrl+V or upload an image.', 'error');
+          return;
+        }
+        const items = await navigator.clipboard.read();
+        const imageItem = items.find(it => it.types && it.types.includes('image/png'));
+        if (!imageItem) {
+          showStatus('No image found in clipboard. Copy a QR screenshot first.', 'error');
+          return;
+        }
+        const blob = await imageItem.getType('image/png');
+        const file = new File([blob], 'clipboard-qr.png', { type: 'image/png' });
+        handleQrImageFile(file);
+      } catch (err) {
+        showStatus('Clipboard read failed: ' + err.message, 'error');
+      }
+    }
+
+    document.addEventListener('paste', function (e) {
+      const items = Array.from((e.clipboardData || {}).items || []);
+      const imageItem = items.find(it => it.type.startsWith('image/'));
+      if (!imageItem) return;
+      e.preventDefault();
+      const file = imageItem.getAsFile();
+      if (file) handleQrImageFile(file);
+    });
+
+    document.getElementById('qrFileInput').addEventListener('change', function () {
+      const file = this.files && this.files[0];
+      this.value = '';
+      if (!file) return;
+      if (file.type.startsWith('image/')) handleQrImageFile(file);
+      else showStatus('Please choose an image file.', 'error');
+    });
+
+    // --- Send auth ---
+
+    async function sendPost(qrData) {
+      const { redirect, session, platform } = qrData;
+      if (!redirect || !session) {
+        showStatus('QR missing redirect or session', 'error');
+        return;
+      }
+
+      const ename = getEname();
+      showLog('Platform: ' + platform + ' | Session: ' + session);
+      showLog('Redirect: ' + redirect + ' | Ename: ' + ename);
+
+      let signature;
+      try {
+        signature = await signSession(session);
+        showLog('Signature: ' + signature);
+      } catch (err) {
+        showStatus('Signing failed: ' + err.message, 'error');
+        return;
+      }
+
+      const body = JSON.stringify({ session, ename, signature });
+      showStatus('Sending to ' + platform + '...', 'info');
+
+      fetch(redirect, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body })
+      .then(r => r.text())
+      .then(data => { showLog('Response: ' + data); showStatus('Done (' + platform + ')', 'success'); })
+      .catch(err => { showLog('Error: ' + err.message); showStatus('Error: ' + err.message, 'error'); });
+    }
+
+    // --- Scanner ---
+
+    function onScanSuccess(decodedText) {
+      if (html5QrCode) html5QrCode.stop().catch(() => {});
+      document.getElementById('restartBtn').style.display = 'block';
+      showResult(decodedText);
+      sendPost(parseQrData(decodedText));
+    }
+
+    function startScanner() {
+      showLog('Starting camera...');
+      html5QrCode = new Html5Qrcode(READER_ID);
+      html5QrCode.start({ facingMode: 'environment' }, { fps: 10, qrbox: { width: 250, height: 250 } }, onScanSuccess)
+      .then(() => showLog('Scanner started'))
+      .catch(err => { showLog('Camera error: ' + err); showStatus('Camera error: ' + err, 'error'); document.getElementById('restartBtn').style.display = 'block'; });
+    }
+
+    function restartScanner() {
+      document.getElementById('result').style.display = 'none';
+      document.getElementById('status').style.display = 'none';
+      document.getElementById('restartBtn').style.display = 'none';
+      document.getElementById('log').style.display = 'none';
+      document.getElementById('log').textContent = '';
+      startScanner();
+    }
+
+    // --- Init ---
+    document.getElementById('enameInput').addEventListener('input', function() {
+      config.ename = this.value.trim();
+      localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
+    });
+    if (config.ename) {
+      document.getElementById('enameInput').value = config.ename;
+    }
+    document.getElementById('pubkeyBox').textContent = 'PubKey: ' + publicKeyB64;
+    window.addEventListener('load', startScanner);
+  </script>
+</body>
+</html>

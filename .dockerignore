@@ -1,8 +1,11 @@
 
 # Node cruft
 node_modules
+**/node_modules
 .pnpm
+**/.pnpm
 dist
+**/dist
 build
 .cache
 turbo
@@ -30,10 +33,10 @@ coverage
 *.swp
 *.swo
 
+# Local database data (owned by container users; must not enter build context)
+datastorage
+
 # Git stuff
 .git
 .gitignore
 
-# Prevent docker context pollution from other packages in monorepo
-apps/*/node_modules
-packages/*/node_modules
