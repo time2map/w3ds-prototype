@@ -13,7 +13,7 @@ services:
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-postgres}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-postgres}
-      POSTGRES_MULTIPLE_DATABASES: registry,provisioner
+      POSTGRES_MULTIPLE_DATABASES: registry,provisioner,awareness
     volumes:
       - ./datastorage/postgres:/var/lib/postgresql/data
       - ./db/init-multiple-databases.sh:/docker-entrypoint-initdb.d/init-multiple-databases.sh
@@ -78,6 +78,22 @@ services:
         condition: service_healthy
     restart: "no"
 
+  migrate-aaas:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.awareness-service
+    container_name: metastate-core-migrate-aaas
+    command:
+      - node
+      - -e
+      - "const {AppDataSource}=require('/app/services/awareness-service/api/dist/database/data-source.js');AppDataSource.initialize().then(()=>AppDataSource.runMigrations()).then(()=>{console.log('awareness-service migrations applied');process.exit(0)}).catch(e=>{console.error(e);process.exit(1)})"
+    environment:
+      AWARENESS_DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/awareness
+    depends_on:
+      postgres:
+        condition: service_healthy
+    restart: "no"
+
   registry:
     build:
       context: .
@@ -126,6 +142,8 @@ services:
       PLATFORM_NAME: provisioner
       EXPRESS_PORT: "3001"
       FASTIFY_PORT: "4000"
+      AWARENESS_SERVICE_URL: http://awareness-service:4100
+      AWARENESS_INGEST_SECRET: ${AWARENESS_INGEST_SECRET:-replace-with-a-strong-secret}
     depends_on:
       migrate-evault:
         condition: service_completed_successfully
@@ -133,6 +151,36 @@ services:
         condition: service_healthy
     healthcheck:
       test: [ "CMD-SHELL", "node -e \"require('http').get('http://localhost:3001/health',(r)=>process.exit(r.statusCode===200?0:1))\"" ]
+      interval: 30s
+      timeout: 3s
+      start_period: 10s
+      retries: 3
+
+  awareness-service:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.awareness-service
+    container_name: metastate-core-awareness-service
+    ports:
+      - "4100:4100"
+    environment:
+      AWARENESS_DATABASE_URL: postgres://${POSTGRES_USER:-postgres}:${POSTGRES_PASSWORD:-postgres}@postgres:5432/awareness
+      AWARENESS_API_PORT: "4100"
+      AWARENESS_PUBLIC_URL: ${AWARENESS_PUBLIC_URL:-http://localhost:4100}
+      AWARENESS_INGEST_SECRET: ${AWARENESS_INGEST_SECRET:-replace-with-a-strong-secret}
+      PUBLIC_REGISTRY_URL: http://registry:4321
+      AAAS_ADMIN_ENAMES: ${AAAS_ADMIN_ENAMES:-}
+      AAAS_JWT_SECRET: ${AAAS_JWT_SECRET:-awareness-dev-secret}
+      AWARENESS_MAX_ATTEMPTS: ${AWARENESS_MAX_ATTEMPTS:-3}
+      AWARENESS_DELIVERY_POLL_MS: ${AWARENESS_DELIVERY_POLL_MS:-2000}
+      AWARENESS_REGISTRY_SYNC_MS: ${AWARENESS_REGISTRY_SYNC_MS:-60000}
+    depends_on:
+      migrate-aaas:
+        condition: service_completed_successfully
+      registry:
+        condition: service_healthy
+    healthcheck:
+      test: [ "CMD-SHELL", "node -e \"require('http').get('http://localhost:4100/health',(r)=>process.exit(r.statusCode===200?0:1))\"" ]
       interval: 30s
       timeout: 3s
       start_period: 10s
