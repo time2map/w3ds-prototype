@@ -44,6 +44,8 @@
     .modal p { font-size: 0.85rem; color: #94a3b8; margin-bottom: 16px; }
     .modal input { width: 100%; padding: 10px 12px; background: #0f172a; color: #e2e8f0; border: 1px solid #334155; border-radius: 8px; font-family: monospace; font-size: 0.9rem; outline: none; }
     .modal input:focus { border-color: #2563eb; }
+    .modal .field { margin-bottom: 12px; }
+    .modal .field label { display: block; font-size: 0.75rem; color: #94a3b8; margin-bottom: 4px; text-transform: uppercase; letter-spacing: 0.05em; }
     .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 20px; }
   </style>
 </head>
@@ -68,8 +70,23 @@
     <div class="modal">
       <h2 id="modal-title"></h2>
       <p id="modal-subtitle"></p>
-      <input id="modal-input" type="text" spellcheck="false" autocomplete="off"
-             onkeydown="if (event.key === 'Enter') confirmModal()" />
+      <div class="field">
+        <label for="modal-input">eName</label>
+        <input id="modal-input" type="text" spellcheck="false" autocomplete="off"
+               onkeydown="if (event.key === 'Enter') confirmModal()" />
+      </div>
+      <div id="modal-create-fields" style="display: none;">
+        <div class="field">
+          <label for="modal-name">Display name (name surname)</label>
+          <input id="modal-name" type="text" spellcheck="false" autocomplete="off"
+                 onkeydown="if (event.key === 'Enter') confirmModal()" />
+        </div>
+        <div class="field">
+          <label for="modal-bio">Bio (optional)</label>
+          <input id="modal-bio" type="text" spellcheck="false" autocomplete="off"
+                 onkeydown="if (event.key === 'Enter') confirmModal()" />
+        </div>
+      </div>
       <div class="modal-actions">
         <button class="btn ghost" onclick="closeModal()">Cancel</button>
         <button id="modal-confirm" class="btn" onclick="confirmModal()"></button>
@@ -94,18 +111,23 @@
       const subtitle = document.getElementById('modal-subtitle');
       const input = document.getElementById('modal-input');
       const confirm = document.getElementById('modal-confirm');
+      const createFields = document.getElementById('modal-create-fields');
       if (mode === 'create') {
         title.textContent = 'New eName';
-        subtitle.textContent = 'Enter an eName for the new eVault.';
+        subtitle.textContent = 'Enter an eName and display name for the new eVault.';
         input.value = generateEName();
         confirm.textContent = 'Create';
         confirm.className = 'btn';
+        createFields.style.display = 'block';
+        document.getElementById('modal-name').value = '';
+        document.getElementById('modal-bio').value = '';
       } else {
         title.textContent = 'Delete eName';
         subtitle.textContent = 'Enter the eName. All eVaults for this eName will be deleted.';
         input.value = '';
         confirm.textContent = 'Delete';
         confirm.className = 'btn danger';
+        createFields.style.display = 'none';
       }
       document.getElementById('modal').style.display = 'flex';
       input.focus();
@@ -134,10 +156,22 @@
       try {
         let res;
         if (modalMode === 'create') {
+          const displayName = document.getElementById('modal-name').value.trim();
+          const bio = document.getElementById('modal-bio').value.trim();
+          if (!displayName) {
+            confirm.disabled = false;
+            showStatus('Display name is required', 'error');
+            document.getElementById('modal-name').focus();
+            return;
+          }
           res = await fetch(ADMIN_API, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ ename })
+            body: JSON.stringify({
+              ename,
+              displayName,
+              bio: bio || undefined
+            })
           });
         } else {
           res = await fetch(ADMIN_API + '?ename=' + encodeURIComponent(ename), { method: 'DELETE' });
