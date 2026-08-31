@@ -32,6 +32,8 @@
     th { background: #111c33; color: #94a3b8; font-weight: 600; text-transform: uppercase; font-size: 0.75rem; letter-spacing: 0.05em; }
     td { word-break: break-all; }
     .mono { font-family: monospace; font-size: 0.8rem; color: #6ee7b7; }
+    td a { color: #6ee7b7; }
+    td a:hover { color: #93c5fd; text-decoration: underline; }
     .empty { padding: 32px; text-align: center; color: #94a3b8; }
     .actions .btn { padding: 6px 12px; font-size: 0.8rem; }
     #detail { margin-top: 16px; max-width: 800px; padding: 16px; background: #1e293b; border-radius: 12px; font-size: 0.8rem; display: none; word-break: break-all; }
@@ -60,7 +62,7 @@
   <div id="status"></div>
   <table>
     <thead>
-      <tr><th>eName</th><th>eVault</th><th>URI</th><th></th></tr>
+      <tr><th>Display Name</th><th>eName</th><th>eVault</th><th>URI</th><th></th></tr>
     </thead>
     <tbody id="tbody"></tbody>
   </table>
@@ -103,6 +105,58 @@
 
     function generateEName() {
       return '@' + crypto.randomUUID();
+    }
+
+    const USER_PROFILE_ONTOLOGY = '550e8400-e29b-41d4-a716-446655440000';
+    let profileToken = null;
+
+    // Get a registry platform token (same key that authorizes eVault GraphQL
+    // reads) so the admin page can fetch each eName's UserProfile envelope.
+    async function getProfileToken() {
+      if (profileToken) return profileToken;
+      const res = await fetch(REGISTRY_API + '/platforms/certification', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ platform: 'admin-ui' })
+      });
+      if (!res.ok) throw new Error('platform token: ' + res.status);
+      const data = await res.json();
+      profileToken = data.token;
+      return profileToken;
+    }
+
+    // Reads the UserProfile MetaEnvelope for an eName and returns its
+    // displayName, or null when the profile is missing/unreadable.
+    async function fetchDisplayName(ename) {
+      try {
+        const token = await getProfileToken();
+        const res = await fetch(EVAULT_API + '/graphql', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-ENAME': ename,
+            'Authorization': 'Bearer ' + token
+          },
+          body: JSON.stringify({
+            query: 'query FindUserProfile($ontologyId: ID!) { metaEnvelopes(filter: { ontologyId: $ontologyId }, first: 1) { edges { node { parsed } } } }',
+            variables: { ontologyId: USER_PROFILE_ONTOLOGY }
+          })
+        });
+        const data = await res.json();
+        const node = data && data.data && data.data.metaEnvelopes &&
+          data.data.metaEnvelopes.edges && data.data.metaEnvelopes.edges[0] &&
+          data.data.metaEnvelopes.edges[0].node;
+        if (!node || !node.parsed) return null;
+        const parsed = node.parsed;
+        const profile = parsed[USER_PROFILE_ONTOLOGY] || parsed;
+        if (profile && typeof profile.displayName === 'string' && profile.displayName.trim()) {
+          return profile.displayName;
+        }
+        return null;
+      } catch (err) {
+        console.error('Failed to fetch display name for ' + ename + ':', err);
+        return null;
+      }
     }
 
     function openModal(mode) {
@@ -219,7 +273,7 @@
       hideStatus();
       const tbody = document.getElementById('tbody');
       const detail = document.getElementById('detail');
-      tbody.innerHTML = '<tr><td class="empty" colspan="4">Loading...</td></tr>';
+      tbody.innerHTML = '<tr><td class="empty" colspan="5">Loading...</td></tr>';
       detail.style.display = 'none';
       try {
         const res = await fetch(REGISTRY_API + '/list', { headers: { accept: 'application/json' } });
@@ -237,15 +291,33 @@
       const count = document.getElementById('count');
       tbody.innerHTML = '';
       if (!Array.isArray(vaults) || vaults.length === 0) {
-        tbody.innerHTML = '<tr><td class="empty" colspan="4">No eVaults registered</td></tr>';
+        tbody.innerHTML = '<tr><td class="empty" colspan="5">No eVaults registered</td></tr>';
         count.textContent = '0 registered';
         return;
       }
       count.textContent = vaults.length + ' registered';
       vaults.forEach(function (v) {
         const tr = el('tr');
-        tr.appendChild(el('td', 'mono', v.ename));
-        tr.appendChild(el('td', 'mono', v.evault || '—'));
+        const nameTd = el('td', '', '…');
+        tr.appendChild(nameTd);
+        const enameLink = document.createElement('a');
+        enameLink.href = '/qr?ename=' + encodeURIComponent(v.ename);
+        enameLink.target = '_blank';
+        enameLink.className = 'mono';
+        enameLink.textContent = v.ename;
+        tr.appendChild(el('td', '')).appendChild(enameLink);
+        const evaultTd = el('td', '');
+        if (v.evault) {
+          const evaultLink = document.createElement('a');
+          evaultLink.href = '/evault?evault=' + encodeURIComponent(v.evault);
+          evaultLink.target = '_blank';
+          evaultLink.className = 'mono';
+          evaultLink.textContent = v.evault;
+          evaultTd.appendChild(evaultLink);
+        } else {
+          evaultTd.textContent = '—';
+        }
+        tr.appendChild(evaultTd);
         tr.appendChild(el('td', '', v.uri || '—'));
         const td = el('td', 'actions');
         const btn = el('button', 'btn', 'Details');
@@ -253,6 +325,10 @@
         td.appendChild(btn);
         tr.appendChild(td);
         tbody.appendChild(tr);
+        fetchDisplayName(v.ename).then(function (displayName) {
+          if (displayName) nameTd.textContent = displayName;
+          else nameTd.textContent = '—';
+        });
       });
     }
 

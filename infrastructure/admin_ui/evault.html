@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>eVault MetaEnvelopes</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0f172a;
+      color: #e2e8f0;
+      min-height: 100vh;
+      padding: 16px;
+    }
+    h1 { font-size: 1.5rem; margin: 8px 0 16px; }
+    .toolbar { display: flex; align-items: center; gap: 12px; max-width: 800px; margin-bottom: 16px; }
+    #evault-id-input {
+      flex: 1;
+      padding: 10px 12px;
+      background: #1e293b;
+      color: #e2e8f0;
+      border: 1px solid #334155;
+      border-radius: 8px;
+      font-family: monospace;
+      font-size: 0.9rem;
+      outline: none;
+    }
+    #evault-id-input:focus { border-color: #2563eb; }
+    .btn { padding: 10px 20px; background: #2563eb; color: #fff; border: none; border-radius: 8px; font-size: 0.9rem; cursor: pointer; }
+    .btn:active { background: #1d4ed8; }
+    .btn:disabled { opacity: 0.6; cursor: not-allowed; }
+    #count { color: #94a3b8; font-size: 0.875rem; }
+    #meta { color: #94a3b8; font-size: 0.875rem; margin-bottom: 16px; max-width: 800px; word-break: break-all; }
+    #status { padding: 12px 16px; border-radius: 8px; font-size: 0.875rem; max-width: 800px; text-align: center; display: none; margin-bottom: 16px; }
+    .success { background: #064e3b; color: #6ee7b7; }
+    .error { background: #7f1d1d; color: #fca5a5; }
+    .info { background: #1e3a5f; color: #93c5fd; }
+    table { width: 100%; max-width: 800px; border-collapse: collapse; background: #1e293b; border-radius: 12px; overflow: hidden; }
+    th, td { padding: 12px 16px; text-align: left; font-size: 0.875rem; border-bottom: 1px solid #334155; }
+    th { background: #111c33; color: #94a3b8; font-weight: 600; text-transform: uppercase; font-size: 0.75rem; letter-spacing: 0.05em; }
+    td { word-break: break-all; }
+    .mono { font-family: monospace; font-size: 0.8rem; color: #6ee7b7; }
+    td a { color: #6ee7b7; }
+    td a:hover { color: #93c5fd; text-decoration: underline; }
+    .empty { padding: 32px; text-align: center; color: #94a3b8; }
+  </style>
+</head>
+<body>
+  <h1>eVault MetaEnvelopes</h1>
+  <div class="toolbar">
+    <input id="evault-id-input" type="text" spellcheck="false" autocomplete="off"
+           placeholder="eVault ID (or eName)"
+           onkeydown="if (event.key === 'Enter') loadMetaEnvelopes()" />
+    <button class="btn" id="load-btn" onclick="loadMetaEnvelopes()">Load</button>
+    <span id="count"></span>
+  </div>
+  <div id="meta"></div>
+  <div id="status"></div>
+  <table>
+    <thead>
+      <tr><th>MetaEnvelope ID</th><th>Ontology ID</th></tr>
+    </thead>
+    <tbody id="tbody"></tbody>
+  </table>
+
+  <script>
+    const REGISTRY_API = '/api/registry';
+    const EVAULT_API = '/api/evault';
+
+    const PAGE_SIZE = 100;
+
+    function el(tag, cls, text) {
+      const e = document.createElement(tag);
+      if (cls) e.className = cls;
+      if (text != null) e.textContent = text;
+      return e;
+    }
+
+    function showStatus(msg, type) {
+      const el = document.getElementById('status');
+      el.style.display = 'block';
+      el.className = type;
+      el.textContent = msg;
+    }
+
+    function hideStatus() {
+      document.getElementById('status').style.display = 'none';
+    }
+
+    // Resolve a platform token (same one that authorizes eVault GraphQL reads).
+    async function getPlatformToken() {
+      const res = await fetch(REGISTRY_API + '/platforms/certification', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ platform: 'admin-ui' })
+      });
+      if (!res.ok) throw new Error('platform token: ' + res.status);
+      const data = await res.json();
+      if (!data.token) throw new Error('No token from /platforms/certification');
+      return data.token;
+    }
+
+    // Look up the registry entry matching the given eVault ID (or eName) and
+    // return its eName and URI.
+    async function resolveVault(input) {
+      const res = await fetch(REGISTRY_API + '/list', { headers: { accept: 'application/json' } });
+      if (!res.ok) throw new Error('/list: ' + res.status);
+      const vaults = await res.json();
+      const query = input.trim().toLowerCase();
+      const found = (Array.isArray(vaults) ? vaults : []).find(function (v) {
+        return (v.evault && String(v.evault).toLowerCase() === query) ||
+               (v.ename && String(v.ename).toLowerCase() === query);
+      });
+      if (!found) throw new Error('No eVault registered for "' + input + '"');
+      return found;
+    }
+
+    // Fetch every MetaEnvelope for the resolved eName (paginated).
+    async function fetchMetaEnvelopes(ename, token) {
+      const results = [];
+      let after = null;
+      for (;;) {
+        const variables = { first: PAGE_SIZE };
+        if (after) variables.after = after;
+        const res = await fetch(EVAULT_API + '/graphql', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-ENAME': ename,
+            'Authorization': 'Bearer ' + token
+          },
+          body: JSON.stringify({
+            query: `query ListMetaEnvelopes($first: Int, $after: String) {
+              metaEnvelopes(first: $first, after: $after) {
+                edges { node { id ontology } }
+                pageInfo { hasNextPage endCursor }
+              }
+            }`,
+            variables
+          })
+        });
+        const data = await res.json();
+        if (!res.ok || data.errors) {
+          const msg = (data.errors && data.errors[0] && data.errors[0].message) ||
+            'GraphQL request failed: ' + res.status;
+          throw new Error(msg);
+        }
+        const conn = data.data && data.data.metaEnvelopes;
+        if (!conn) throw new Error('Unexpected GraphQL response');
+        for (const edge of conn.edges) {
+          if (edge && edge.node) results.push(edge.node);
+        }
+        if (!conn.pageInfo || !conn.pageInfo.hasNextPage || !conn.pageInfo.endCursor) break;
+        after = conn.pageInfo.endCursor;
+      }
+      return results;
+    }
+
+    async function loadMetaEnvelopes() {
+      const input = document.getElementById('evault-id-input');
+      const id = input.value.trim();
+      const btn = document.getElementById('load-btn');
+      const tbody = document.getElementById('tbody');
+      const meta = document.getElementById('meta');
+      const count = document.getElementById('count');
+      if (!id) {
+        showStatus('eVault ID is required', 'error');
+        input.focus();
+        return;
+      }
+      btn.disabled = true;
+      hideStatus();
+      meta.textContent = '';
+      count.textContent = '';
+      tbody.innerHTML = '<tr><td class="empty" colspan="2">Loading...</td></tr>';
+      try {
+        const vault = await resolveVault(id);
+        const ename = vault.ename;
+        const token = await getPlatformToken();
+        const envelopes = await fetchMetaEnvelopes(ename, token);
+
+        tbody.innerHTML = '';
+        if (envelopes.length === 0) {
+          tbody.innerHTML = '<tr><td class="empty" colspan="2">No MetaEnvelopes found</td></tr>';
+        } else {
+          for (const m of envelopes) {
+            const tr = el('tr');
+            const idTd = el('td', '');
+            const idLink = document.createElement('a');
+            idLink.href = '/metaenvelope?id=' + encodeURIComponent(m.id) + '&ename=' + encodeURIComponent(ename);
+            idLink.target = '_blank';
+            idLink.className = 'mono';
+            idLink.textContent = m.id;
+            idTd.appendChild(idLink);
+            tr.appendChild(idTd);
+            tr.appendChild(el('td', 'mono', m.ontology));
+            tbody.appendChild(tr);
+          }
+        }
+        count.textContent = envelopes.length + ' metaenvelope' + (envelopes.length === 1 ? '' : 's');
+        meta.textContent = 'eVault ID: ' + vault.evault + ' | eName: ' + ename + ' | URI: ' + (vault.uri || '—');
+        showStatus('Loaded', 'success');
+      } catch (err) {
+        tbody.innerHTML = '';
+        showStatus(err.message, 'error');
+      } finally {
+        btn.disabled = false;
+      }
+    }
+
+    const urlEvault = new URLSearchParams(window.location.search).get('evault');
+    if (urlEvault) {
+      document.getElementById('evault-id-input').value = urlEvault.trim();
+      loadMetaEnvelopes();
+    }
+  </script>
+</body>
+</html>

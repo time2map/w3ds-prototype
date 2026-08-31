@@ -7,6 +7,7 @@
   <script src="https://unpkg.com/html5-qrcode@2.3.8/html5-qrcode.min.js"></script>
   <script src="/admin/elliptic.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/js-sha256/0.11.0/sha256.min.js"></script>
+  <script src="/admin/TestKey.js"></script>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
@@ -56,9 +57,6 @@
   <input type="text" id="enameInput" class="field" placeholder="@22c911f4-bf54-511a-a03b-a73dd5d5efb6">
   <div id="pubkeyBox" style="width:100%;max-width:400px;padding:10px;background:#1e293b;border-radius:8px;font-size:0.7rem;color:#6ee7b7;margin-bottom:8px;word-break:break-all;font-family:monospace"></div>
 
-  <div class="row">
-    <button class="btn btn-secondary" id="genKeyBtn" onclick="generateKeyPair()">New Key</button>
-  </div>
   <button class="btn" id="syncKeyBtn" style="background:#059669;margin-top:0;margin-bottom:12px" onclick="syncPublicKey()">Sync Key to eVault</button>
 
   <div class="row" style="margin-top:0;margin-bottom:12px">
@@ -78,7 +76,6 @@
     const READER_ID = 'reader';
 
     const CONFIG_KEY = 'fw_qr_config';
-    const KEYS_KEY = 'fw_qr_keys';
 
     const DEFAULTS = {
       registryUrl: '/api/registry',
@@ -86,19 +83,14 @@
       ename: ''
     };
 
-    // Fallback ECDSA P-256 key pair (used only when no keys are persisted yet)
-    const DEFAULT_KEYS = {
-      privateJwk: {"key_ops":["sign"],"ext":true,"kty":"EC","x":"tnCnuFNUi6cECY0feZAY6rMQo9VUhbhf-7bJHTHmKKU","y":"vw7V8zCwx5-ryu58VTkP92IbZoRjWsPsKVtQ9hBht6c","crv":"P-256","d":"hCvmAxtMhuM_a9KlmN7qps5bR8GyXJEvIx6iPuttthY"},
-      publicKeyB64: 'BLZwp7hTVIunBAmNH3mQGOqzEKPVVIW4X_u2yR0x5iilvw7V8zCwx5-ryu58VTkP92IbZoRjWsPsKVtQ9hBht6c'
-    };
-
     const ec = new elliptic.ec('p256');
 
     let config = loadJSON(CONFIG_KEY, DEFAULTS);
-    let keys = loadJSON(KEYS_KEY, DEFAULT_KEYS);
-    let privateJwk = keys.privateJwk;
-    let publicKeyB64 = keys.publicKeyB64;
-    let keyPair = ec.keyFromPrivate(base64UrlToBytes(privateJwk.d));
+    // Key pair always comes from TestKey.js (window.TEST_KEY).
+    const keys = window.TEST_KEY;
+    const privateJwk = keys.privateJwk;
+    const publicKeyB64 = keys.publicKeyB64;
+    const keyPair = ec.keyFromPrivate(base64UrlToBytes(privateJwk.d));
 
     let html5QrCode = null;
 
@@ -153,30 +145,6 @@
       localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
       showLog('Settings saved: registry=' + config.registryUrl);
       showStatus('Settings saved', 'success');
-    }
-
-    function generateKeyPair() {
-      const kp = ec.genKeyPair();
-      const x = kp.getPublic().getX().toArray('be', 32);
-      const y = kp.getPublic().getY().toArray('be', 32);
-      const d = kp.getPrivate().toArray('be', 32);
-      const point = new Uint8Array(65);
-      point[0] = 4;
-      point.set(x, 1);
-      point.set(y, 33);
-
-      privateJwk = {
-        key_ops: ['sign'], ext: true, kty: 'EC',
-        x: bytesToBase64Url(x), y: bytesToBase64Url(y), crv: 'P-256', d: bytesToBase64Url(d)
-      };
-      publicKeyB64 = bytesToBase64Url(point);
-      keys = { privateJwk, publicKeyB64 };
-      localStorage.setItem(KEYS_KEY, JSON.stringify(keys));
-      keyPair = ec.keyFromPrivate(base64UrlToBytes(privateJwk.d));
-
-      document.getElementById('pubkeyBox').textContent = 'PubKey: ' + publicKeyB64;
-      showLog('Generated new key pair');
-      showStatus('New key pair generated', 'success');
     }
 
     function getEname() {
@@ -410,6 +378,11 @@
       config.ename = this.value.trim();
       localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
     });
+    const urlEname = new URLSearchParams(window.location.search).get('ename');
+    if (urlEname) {
+      config.ename = urlEname.trim();
+      localStorage.setItem(CONFIG_KEY, JSON.stringify(config));
+    }
     if (config.ename) {
       document.getElementById('enameInput').value = config.ename;
     }
