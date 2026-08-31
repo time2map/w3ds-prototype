@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>MetaEnvelope</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0f172a;
+      color: #e2e8f0;
+      min-height: 100vh;
+      padding: 16px;
+    }
+    h1 { font-size: 1.5rem; margin: 8px 0 16px; }
+    #meta { color: #94a3b8; font-size: 0.875rem; margin-bottom: 16px; max-width: 800px; word-break: break-all; }
+    #status { padding: 12px 16px; border-radius: 8px; font-size: 0.875rem; max-width: 800px; text-align: center; display: none; margin-bottom: 16px; }
+    .success { background: #064e3b; color: #6ee7b7; }
+    .error { background: #7f1d1d; color: #fca5a5; }
+    .info { background: #1e3a5f; color: #93c5fd; }
+    #detail { max-width: 800px; padding: 16px; background: #1e293b; border-radius: 12px; font-size: 0.8rem; display: none; word-break: break-all; }
+    #detail h2 { font-size: 1rem; margin-bottom: 8px; color: #93c5fd; }
+    #detail pre { font-family: monospace; white-space: pre-wrap; color: #94a3b8; }
+    .err-panel { display: block; padding: 8px; border-radius: 6px; background: #7f1d1d; color: #fca5a5; }
+  </style>
+</head>
+<body>
+  <h1>MetaEnvelope</h1>
+  <div id="meta"></div>
+  <div id="status"></div>
+  <div id="detail">
+    <h2 id="detail-title"></h2>
+    <pre id="json"></pre>
+  </div>
+
+  <script>
+    const REGISTRY_API = '/api/registry';
+    const EVAULT_API = '/api/evault';
+
+    function escapeHtml(s) {
+      return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    function showStatus(msg, type) {
+      const el = document.getElementById('status');
+      el.style.display = 'block';
+      el.className = type;
+      el.textContent = msg;
+    }
+
+    async function getPlatformToken() {
+      const res = await fetch(REGISTRY_API + '/platforms/certification', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ platform: 'admin-ui' })
+      });
+      if (!res.ok) throw new Error('platform token: ' + res.status);
+      const data = await res.json();
+      if (!data.token) throw new Error('No token from /platforms/certification');
+      return data.token;
+    }
+
+    async function load() {
+      const params = new URLSearchParams(window.location.search);
+      const id = (params.get('id') || '').trim();
+      const ename = (params.get('ename') || '').trim();
+      const meta = document.getElementById('meta');
+      const detail = document.getElementById('detail');
+      const json = document.getElementById('json');
+      meta.textContent = '';
+      detail.style.display = 'none';
+
+      if (!id || !ename) {
+        showStatus('Missing id or ename query parameter', 'error');
+        return;
+      }
+      meta.textContent = 'MetaEnvelope ID: ' + id + ' | eName: ' + ename;
+
+      try {
+        const token = await getPlatformToken();
+        const res = await fetch(EVAULT_API + '/graphql', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'X-ENAME': ename,
+            'Authorization': 'Bearer ' + token
+          },
+          body: JSON.stringify({
+            query: `query GetMetaEnvelope($id: ID!) {
+              metaEnvelope(id: $id) {
+                id
+                ontology
+                envelopes {
+                  id
+                  ontology
+                  fieldKey
+                  value
+                  valueType
+                }
+                parsed
+              }
+            }`,
+            variables: { id }
+          })
+        });
+        const data = await res.json();
+        if (!res.ok || data.errors) {
+          const msg = (data.errors && data.errors[0] && data.errors[0].message) ||
+            'GraphQL request failed: ' + res.status;
+          throw new Error(msg);
+        }
+        const node = data.data && data.data.metaEnvelope;
+        if (node == null) {
+          throw new Error('MetaEnvelope not found');
+        }
+        detail.style.display = 'block';
+        document.getElementById('detail-title').textContent = node.id;
+        json.textContent = JSON.stringify(node, null, 2);
+      } catch (err) {
+        detail.style.display = 'block';
+        json.textContent = '';
+        document.getElementById('detail-title').textContent = 'Error';
+        json.innerHTML = '<span class="err-panel">' + escapeHtml(err.message) + '</span>';
+      }
+    }
+
+    window.addEventListener('load', load);
+  </script>
+</body>
+</html>
