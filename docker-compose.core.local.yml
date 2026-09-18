@@ -8,6 +8,7 @@ services:
   postgres:
     image: postgres:17-alpine
     container_name: metastate-core-postgres
+    restart: unless-stopped
     ports:
       - "5432:5432"
     environment:
@@ -27,6 +28,7 @@ services:
   neo4j:
     image: neo4j:4.4
     container_name: metastate-core-neo4j
+    restart: unless-stopped
     ports:
       - "7474:7474"
       - "7687:7687"
@@ -99,6 +101,7 @@ services:
       context: .
       dockerfile: docker/Dockerfile.registry
     container_name: metastate-core-registry
+    restart: unless-stopped
     ports:
       - "4321:4321"
     environment:
@@ -121,6 +124,7 @@ services:
       context: .
       dockerfile: docker/Dockerfile.evault-core
     container_name: metastate-core-evault-core
+    restart: unless-stopped
     ports:
       - "3001:3001"
       - "4000:4000"
@@ -161,6 +165,7 @@ services:
       context: .
       dockerfile: docker/Dockerfile.awareness-service
     container_name: metastate-core-awareness-service
+    restart: unless-stopped
     ports:
       - "4100:4100"
     environment:
@@ -190,6 +195,7 @@ services:
   nginx:
     image: nginx:alpine
     container_name: metastate-core-nginx
+    restart: unless-stopped
     ports:
       - "8042:80"
     volumes:
