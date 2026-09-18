@@ -137,8 +137,12 @@ services:
       NEO4J_USER: ${NEO4J_USER:-neo4j}
       NEO4J_PASSWORD: ${NEO4J_PASSWORD:-neo4j}
       PUBLIC_REGISTRY_URL: http://registry:4321
-      PUBLIC_PROVISIONER_URL: http://localhost:3001
-      PUBLIC_EVAULT_SERVER_URI: http://localhost:4000
+      PUBLIC_PROVISIONER_URL: ${PUBLIC_PROVISIONER_URL:-http://localhost:3001}
+      # URI the eVault advertises to other platforms (and stores in the Registry
+      # on provisioning). Must be reachable by those platforms: on a remote
+      # stand point it at the host entry point, e.g.
+      # http://<host>/api/evault -- otherwise resolve() hands out localhost:4000.
+      PUBLIC_EVAULT_SERVER_URI: ${PUBLIC_EVAULT_SERVER_URI:-http://localhost:4000}
       REGISTRY_SHARED_SECRET: ${REGISTRY_SHARED_SECRET:-dev-secret-change-me}
       PROVISIONER_SIGNING_SEED: '${PROVISIONER_SIGNING_SEED:?PROVISIONER_SIGNING_SEED must be set in .env}'
       PROVISIONER_KID: ${PROVISIONER_KID:-provisioner-1}
